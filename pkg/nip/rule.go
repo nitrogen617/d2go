@@ -20,7 +20,8 @@ const (
 )
 
 var (
-	fixedPropsRegexp = regexp.MustCompile(`(\[(type|quality|class|name|flag|color|prefix|suffix)]\s*(<=|<|>|>=|!=|==)\s*([a-zA-Z0-9]+))`)
+	//  (&, |, ^, <<, >>) added
+	fixedPropsRegexp = regexp.MustCompile(`(\[(type|quality|class|name|flag|color|prefix|suffix)]\s*(<=|<|>|>=|!=|==|&|\||\^|<<|>>)\s*([a-zA-Z0-9]+))`)
 	statsRegexp      = regexp.MustCompile(`\[(.*?)]`)
 	maxQtyRegexp     = regexp.MustCompile(`(\[maxquantity]\s*(<=|<|>|>=|!=|==)\s*([0-9]+))`)
 	tierRegexp       = regexp.MustCompile(`(\[tier]\s*(<=|<|>|>=|!=|==)\s*([0-9]+))`)
@@ -37,6 +38,7 @@ type Rule struct {
 	mercTier      float64
 	stage1        *vm.Program
 	stage2        *vm.Program
+	stage2Norm    string
 	requiredStats []string
 }
 
@@ -94,20 +96,23 @@ func (r Rules) EvaluateTiers(it data.Item, tierRulesIndexes []int) (Rule, Rule) 
 	highestTierRule := Rule{}
 	highestMercTierRule := Rule{}
 	for _, ruleIndex := range tierRulesIndexes {
-		if ruleIndex < len(r) {
-			rule := r[ruleIndex]
-			if rule.Enabled {
-				result, err := rule.Evaluate(it)
-				if err != nil {
-					continue
+		// guard against negative / out-of-range indexes (would panic)
+		if ruleIndex < 0 || ruleIndex >= len(r) {
+			continue
+		}
+
+		rule := r[ruleIndex]
+		if rule.Enabled {
+			result, err := rule.Evaluate(it)
+			if err != nil {
+				continue
+			}
+			if result == RuleResultFullMatch || result == RuleResultPartial {
+				if rule.tier > highestTierRule.tier {
+					highestTierRule = rule
 				}
-				if result == RuleResultFullMatch || result == RuleResultPartial {
-					if rule.tier > highestTierRule.tier {
-						highestTierRule = rule
-					}
-					if rule.mercTier > highestMercTierRule.mercTier {
-						highestMercTierRule = rule
-					}
+				if rule.mercTier > highestMercTierRule.mercTier {
+					highestMercTierRule = rule
 				}
 			}
 		}
@@ -175,6 +180,9 @@ func NewRule(rawRule string, filename string, lineNumber int) (Rule, error) {
 	if len(parts) > 0 {
 		stage1 := strings.TrimSpace(parts[0])
 		if stage1 != "" {
+			// Kolbot compatibility: make stage1 fully case-insensitive
+			stage1 = strings.ToLower(stage1)
+
 			line, err := replaceStringPropertiesInStage1(stage1)
 			if err != nil {
 				return Rule{}, err
@@ -193,16 +201,21 @@ func NewRule(rawRule string, filename string, lineNumber int) (Rule, error) {
 	if len(parts) > 1 {
 		stage2 := strings.TrimSpace(parts[1])
 		if stage2 != "" {
+			// Keep a normalized copy for Evaluate() heuristics
+			stage2Lower := strings.ToLower(stage2)
+			stage2Lower = normalizeParenthesizedExpressions(stage2Lower)
+			r.stage2Norm = stage2Lower
+
 			// Extract stats before removing brackets for compilation
-			r.requiredStats = getRequiredStatsForRule(stage2)
+			r.requiredStats = getRequiredStatsForRule(stage2Lower)
 
 			statsMap := make(map[string]int)
 			for _, prop := range r.requiredStats {
 				statsMap[prop] = 0
 			}
 
-			// Normalize whitespace around operators in parenthesized expressions
-			stage2 = normalizeParenthesizedExpressions(stage2)
+			// Use already-normalized stage2Lower for compilation
+			stage2 = stage2Lower
 
 			// Remove brackets for compilation
 			compileReady := strings.ReplaceAll(stage2, "[", "")
@@ -252,7 +265,15 @@ func (r Rule) Evaluate(it data.Item) (RuleResult, error) {
 		case "name":
 			stage1Props["name"] = it.ID
 		case "flag":
-			stage1Props["flag"] = map[bool]int{true: 1, false: 0}[it.Ethereal]
+			// 0x400000 (eth) | 0x4000000 (runeword)
+			currentFlag := 0
+			if it.Ethereal {
+				currentFlag |= 0x400000
+			}
+			if it.IsRuneword {
+				currentFlag |= 0x4000000
+			}
+			stage1Props["flag"] = currentFlag
 		case "prefix":
 			if it.Affixes.Rare.Prefix != 0 {
 				stage1Props["prefix"] = int(it.Affixes.Rare.Prefix)
@@ -278,19 +299,31 @@ func (r Rule) Evaluate(it data.Item) (RuleResult, error) {
 		}
 	}
 
-	// Check if stage1 exists before evaluating
-	if r.stage1 == nil {
-		return RuleResultNoMatch, fmt.Errorf("stage1 program is nil")
+	// Kolbot compatibility:
+	// If stage1 is empty, treat it as "true" and evaluate only stage2 (if any).
+	stage1Match := true
+	if r.stage1 != nil {
+		stage1Result, err := expr.Run(r.stage1, stage1Props)
+		if err != nil {
+			return RuleResultNoMatch, fmt.Errorf("error evaluating rule stage1: %w", err)
+		}
+
+		// bitwise ops may return int-like values; non-zero is true
+		switch res := stage1Result.(type) {
+		case bool:
+			stage1Match = res
+		case int:
+			stage1Match = res != 0
+		case int64:
+			stage1Match = res != 0
+		case float64:
+			stage1Match = res != 0
+		default:
+			return RuleResultNoMatch, fmt.Errorf("unknown result type from stage1: %T", stage1Result)
+		}
 	}
 
-	// Let's evaluate first stage
-	stage1Result, err := expr.Run(r.stage1, stage1Props)
-	if err != nil {
-		return RuleResultNoMatch, fmt.Errorf("error evaluating rule stage1: %w", err)
-	}
-
-	// If stage1 does not match, we can stop here, nothing else to match
-	if !stage1Result.(bool) {
+	if !stage1Match {
 		return RuleResultNoMatch, nil
 	}
 
@@ -305,10 +338,7 @@ func (r Rule) Evaluate(it data.Item) (RuleResult, error) {
 	}
 
 	stage2Props := make(map[string]int)
-	stage2 := ""
-	if len(strings.Split(r.RawLine, "#")) > 1 {
-		stage2 = strings.ToLower(strings.Split(r.RawLine, "#")[1])
-	}
+	stage2 := r.stage2Norm
 
 	// Special handling for skill tabs
 	if strings.Contains(stage2, "[itemaddskilltab]") {
@@ -417,8 +447,20 @@ func (r Rule) Evaluate(it data.Item) (RuleResult, error) {
 		return RuleResultNoMatch, fmt.Errorf("error evaluating rule stage2: %w", err)
 	}
 
-	// 100% rule match, we can return here
-	if res.(bool) {
+	stage2Match := false
+	switch v := res.(type) {
+	case bool:
+		stage2Match = v
+	case int:
+		stage2Match = v != 0
+	case int64:
+		stage2Match = v != 0
+	case float64:
+		stage2Match = v != 0
+	default:
+		return RuleResultNoMatch, fmt.Errorf("unknown result type from stage2: %T", res)
+	}
+	if stage2Match {
 		return RuleResultFullMatch, nil
 	}
 
@@ -429,20 +471,60 @@ func replaceStringPropertiesInStage1(stage1 string) (string, error) {
 	baseProperties := fixedPropsRegexp.FindAllStringSubmatch(stage1, -1)
 	for _, prop := range baseProperties {
 		replaceWith := ""
+		key := strings.ToLower(prop[4])
 		switch prop[2] {
 		case "type":
-			replaceWith = strings.ReplaceAll(prop[0], prop[4], fmt.Sprintf("%d", item.ItemTypes[typeAliases[prop[4]]].ID))
+			alias, ok := typeAliases[key]
+			if !ok {
+				return "", fmt.Errorf("unknown type alias: %s", prop[4])
+			}
+			t, ok := item.ItemTypes[alias]
+			if !ok {
+				return "", fmt.Errorf("unknown item type for alias: %s -> %v", prop[4], alias)
+			}
+			replaceWith = strings.ReplaceAll(prop[0], prop[4], fmt.Sprintf("%d", t.ID))
+
 		case "quality":
-			replaceWith = strings.ReplaceAll(prop[0], prop[4], fmt.Sprintf("%d", qualityAliases[prop[4]]))
+			q, ok := qualityAliases[key]
+			if !ok {
+				return "", fmt.Errorf("unknown quality alias: %s", prop[4])
+			}
+			replaceWith = strings.ReplaceAll(prop[0], prop[4], fmt.Sprintf("%d", q))
+
 		case "class":
-			replaceWith = strings.ReplaceAll(prop[0], prop[4], fmt.Sprintf("%d", classAliases[prop[4]]))
+			c, ok := classAliases[key]
+			if !ok {
+				return "", fmt.Errorf("unknown class alias: %s", prop[4])
+			}
+			replaceWith = strings.ReplaceAll(prop[0], prop[4], fmt.Sprintf("%d", c))
+
 		case "name":
-			replaceWith = strings.ReplaceAll(prop[0], prop[4], fmt.Sprintf("%d", item.GetIDByName(prop[4])))
+			// name lookup likely already case-insensitive, but be safe:
+			id := item.GetIDByName(prop[4])
+			if id == -1 {
+				// If -1 is returned for unknown, treat as unknown.
+				return "", fmt.Errorf("unknown item name: %s", prop[4])
+			}
+			replaceWith = strings.ReplaceAll(prop[0], prop[4], fmt.Sprintf("%d", id))
+
 		case "flag":
-			replaceWith = strings.ReplaceAll(prop[0], prop[4], fmt.Sprintf("%d", 1))
+			val := 0
+			switch key {
+			case "runeword":
+				val = 0x4000000
+			case "ethereal":
+				val = 0x400000
+			}
+			if val != 0 {
+				replaceWith = strings.ReplaceAll(prop[0], prop[4], fmt.Sprintf("0x%X", val))
+			} else {
+				// leave as-is if numeric etc.
+			}
+
 		case "prefix", "suffix":
 			// Handle prefix/suffix IDs
 			replaceWith = strings.ReplaceAll(prop[0], prop[4], prop[4])
+
 		case "color":
 			// TODO: Not supported yet
 			return "", fmt.Errorf("property %s is not supported yet", prop[2])
@@ -461,9 +543,10 @@ func getRequiredStatsForRule(line string) []string {
 	statsFound := make(map[string]bool)
 
 	for _, statName := range statsRegexp.FindAllStringSubmatch(line, -1) {
-		if !statsFound[statName[1]] {
-			statsList = append(statsList, statName[1])
-			statsFound[statName[1]] = true
+		key := strings.ToLower(statName[1])
+		if !statsFound[key] {
+			statsList = append(statsList, key)
+			statsFound[key] = true
 		}
 	}
 	return statsList
