@@ -1,6 +1,8 @@
 package nip
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/hectorgimenez/d2go/pkg/data"
@@ -36,6 +38,7 @@ func TestRule_Evaluate(t *testing.T) {
 			},
 			args: args{
 				item: data.Item{
+					Identified: true,
 					ID:       603,
 					Name:     "SmAlLCharM",
 					Quality:  item.QualityMagic,
@@ -58,6 +61,7 @@ func TestRule_Evaluate(t *testing.T) {
 			},
 			args: args{
 				item: data.Item{
+					Identified: true,
 					ID:       373,
 					Name:     "mageplate",
 					Quality:  item.QualitySuperior,
@@ -78,6 +82,7 @@ func TestRule_Evaluate(t *testing.T) {
 			},
 			args: args{
 				item: data.Item{
+					Identified: true,
 					ID:   373,
 					Name: "mageplate",
 					Stats: []stat.Data{
@@ -95,6 +100,7 @@ func TestRule_Evaluate(t *testing.T) {
 			},
 			args: args{
 				item: data.Item{
+					Identified: true,
 					ID:   373,
 					Name: "mageplate",
 					Stats: []stat.Data{
@@ -128,9 +134,9 @@ func TestRule_Evaluate(t *testing.T) {
 			},
 			args: args{
 				item: data.Item{
-					ID:         187,
+					ID:         item.GetIDByName("RunicTalons"),
 					Identified: false,
-					Name:       "GreaterTalons",
+					Name:       "RunicTalons",
 					Quality:    item.QualityMagic,
 				},
 			},
@@ -226,6 +232,27 @@ func TestNew(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestParseMockNIPFiles(t *testing.T) {
+	dir := "mock"
+	entries, err := os.ReadDir(dir)
+	require.NoError(t, err)
+
+	found := false
+	for _, entry := range entries {
+		if entry.IsDir() || filepath.Ext(entry.Name()) != ".nip" {
+			continue
+		}
+
+		found = true
+		path := filepath.Join(dir, entry.Name())
+		rules, err := ParseNIPFile(path)
+		require.NoErrorf(t, err, "failed parsing %s", path)
+		require.NotNilf(t, rules, "no rules slice returned from %s", path)
+	}
+
+	require.True(t, found, "no .nip files found under mock/")
 }
 
 func BenchmarkEvaluate(b *testing.B) {
