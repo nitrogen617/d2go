@@ -21,7 +21,7 @@ const (
 
 var (
 	//  (&, |, ^, <<, >>) added
-	fixedPropsRegexp = regexp.MustCompile(`(\[(type|quality|class|name|flag|color|prefix|suffix)]\s*(<=|<|>|>=|!=|==|&|\||\^|<<|>>)\s*([a-zA-Z0-9]+))`)
+	fixedPropsRegexp = regexp.MustCompile(`(\[(type|quality|class|name|flag|color|prefix|suffix|runeword)]\s*(<=|<|>|>=|!=|==|&|\||\^|<<|>>)\s*([\p{L}0-9]+))`)
 	statsRegexp      = regexp.MustCompile(`\[(.*?)]`)
 	maxQtyRegexp     = regexp.MustCompile(`(\[maxquantity]\s*(<=|<|>|>=|!=|==)\s*([0-9]+))`)
 	tierRegexp       = regexp.MustCompile(`(\[tier]\s*(<=|<|>|>=|!=|==)\s*([0-9]+))`)
@@ -121,7 +121,7 @@ func (r Rules) EvaluateTiers(it data.Item, tierRulesIndexes []int) (Rule, Rule) 
 	return highestTierRule, highestMercTierRule
 }
 
-var fixedPropsList = map[string]int{"type": 0, "quality": 0, "class": 0, "name": 0, "flag": 0, "color": 0, "prefix": 0, "suffix": 0}
+var fixedPropsList = map[string]int{"type": 0, "quality": 0, "class": 0, "name": 0, "flag": 0, "color": 0, "prefix": 0, "suffix": 0, "runeword": 0}
 
 func NewRule(rawRule string, filename string, lineNumber int) (Rule, error) {
 	rule := sanitizeLine(rawRule)
@@ -293,6 +293,11 @@ func (r Rule) Evaluate(it data.Item) (RuleResult, error) {
 					stage1Props["suffix"] = int(suffix)
 					break
 				}
+			}
+		case "runeword":
+			stage1Props["runeword"] = 0
+			if id, ok := runewordNameIDs[it.RunewordName]; ok {
+				stage1Props["runeword"] = id
 			}
 		case "color":
 			// TODO: Not supported yet
@@ -524,6 +529,13 @@ func replaceStringPropertiesInStage1(stage1 string) (string, error) {
 		case "prefix", "suffix":
 			// Handle prefix/suffix IDs
 			replaceWith = strings.ReplaceAll(prop[0], prop[4], prop[4])
+
+		case "runeword":
+			id, ok := runewordAliases[key]
+			if !ok {
+				return "", fmt.Errorf("unknown runeword alias: %s", prop[4])
+			}
+			replaceWith = strings.ReplaceAll(prop[0], prop[4], fmt.Sprintf("%d", id))
 
 		case "color":
 			// TODO: Not supported yet
