@@ -1,6 +1,11 @@
 package nip
 
-import "github.com/hectorgimenez/d2go/pkg/data/item"
+import (
+	"sort"
+	"strings"
+
+	"github.com/hectorgimenez/d2go/pkg/data/item"
+)
 
 var TypeAliases = typeAliases
 var typeAliases = map[string]string{
@@ -119,6 +124,19 @@ var classAliases = map[string]int{
 	"normal":      0,
 	"exceptional": 1,
 	"elite":       2,
+}
+
+var RunewordAliases = runewordAliases
+var RunewordNameIDs = runewordNameIDs
+
+var (
+	runewordAliases       map[string]int
+	runewordNameIDs       map[item.RunewordName]int
+	runewordAliasReplacer = strings.NewReplacer(" ", "", "'", "", "-", "")
+)
+
+func init() {
+	runewordAliases, runewordNameIDs = buildRunewordAliasMaps()
 }
 
 var StatAliases = statAliases
@@ -789,4 +807,26 @@ var statAliases = map[string][]int{
 
 	// Doesnt really exists, but is calculated in getStatEx
 	"allres": {555},
+}
+
+func collectRunewordNames() []item.RunewordName {
+	seen := make(map[item.RunewordName]struct{})
+	for _, name := range item.RunewordIDMap {
+		if name == item.RunewordNone {
+			continue
+		}
+		seen[name] = struct{}{}
+	}
+
+	names := make([]item.RunewordName, 0, len(seen))
+	for name := range seen {
+		names = append(names, name)
+	}
+
+	return names
+}
+
+func normalizeRunewordAlias(value string) string {
+	value = strings.ToLower(value)
+	return runewordAliasReplacer.Replace(value)
 }
