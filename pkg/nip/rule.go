@@ -456,7 +456,7 @@ func replaceStringPropertiesInStage1(stage1 string) (string, error) {
 			case "ethereal":
 				val = 0x400000
 			default:
-				val = 1
+				return "", fmt.Errorf("unknown flag value defined in nip: %s", prop[4])
 			}
 			replaceWith = strings.ReplaceAll(prop[0], prop[4], fmt.Sprintf("%d", val))
 		case "prefix", "suffix":
