@@ -25,6 +25,15 @@ var (
 	maxQtyRegexp     = regexp.MustCompile(`(\[maxquantity]\s*(<=|<|>|>=|!=|==)\s*([0-9]+))`)
 	tierRegexp       = regexp.MustCompile(`(\[tier]\s*(<=|<|>|>=|!=|==)\s*([0-9]+))`)
 	mercTierRegexp   = regexp.MustCompile(`(\[merctier]\s*(<=|<|>|>=|!=|==)\s*([0-9]+))`)
+
+	variableLayerStats = map[string]stat.ID{
+		"itemskillonhit":     stat.ID(198),
+		"itemskillonattack":  stat.ID(195),
+		"itemskillonkill":    stat.ID(196),
+		"itemskillondeath":   stat.ID(197),
+		"itemskillonlevelup": stat.ID(199),
+		"itemskillongethit":  stat.ID(201),
+	}
 )
 
 type Rule struct {
@@ -387,6 +396,33 @@ func (r Rule) Evaluate(it data.Item) (RuleResult, error) {
 		if statName == "itemaddskilltab" || statName == "itemaddclassskills" {
 			continue
 		}
+
+		if targetStatID, isVariableLayer := variableLayerStats[statName]; isVariableLayer {
+			found := false
+			
+			for _, s := range it.Stats {
+				if s.ID == targetStatID {
+					stage2Props[statName] = s.Layer
+					found = true
+					break
+				}
+			}
+			if !found {
+				for _, s := range it.BaseStats {
+					if s.ID == targetStatID {
+						stage2Props[statName] = s.Layer
+						found = true
+						break
+					}
+				}
+			}
+
+			if !found {
+				stage2Props[statName] = 0
+			}
+			continue
+		}
+
 		statData, found := statAliases[statName]
 		if !found {
 			return RuleResultNoMatch, fmt.Errorf("property %s is not valid or not supported", statName)
@@ -491,6 +527,10 @@ func getRequiredStatsForRule(line string) []string {
 // ValidateStats checks that all required stats in stage2 are valid aliases.
 func (r Rule) ValidateStats() error {
 	for _, statName := range r.requiredStats {
+		
+		if _, isVariable := variableLayerStats[statName]; isVariable {
+			continue
+		}
 		if _, found := statAliases[statName]; !found {
 			return fmt.Errorf("property %s is not valid or not supported", statName)
 		}
