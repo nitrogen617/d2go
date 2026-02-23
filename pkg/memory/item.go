@@ -725,8 +725,13 @@ func calculateItemLevelReq(itm *data.Item, baseDesc item.Description) int {
 		// Add 10 to final level req
 		levelReq += 10
 
+		// Use the higher of base item requirement and crafted formula
+		if levelReq < maxReq {
+			levelReq = maxReq
+		}
+
 		// Cap at 98 if needed (Maximum possible)
-		if levelReq > 99 {
+		if levelReq > 98 {
 			levelReq = 98
 		}
 
